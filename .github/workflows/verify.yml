@@ -39,8 +39,10 @@ jobs:
             echo "::group::emulator $ver (native amd64, port $port)"
             docker run --rm -d --name "emu-$ver" -p "$port:9050" \
               "ghcr.io/goccy/bigquery-emulator:$ver" --project=test
-            # confirm the container is really running this image digest natively
-            docker inspect --format 'image: {{.Config.Image}}  arch: {{.Architecture}}' "emu-$ver" || true
+            # confirm the image really runs as native amd64 (no QEMU):
+            # .Architecture lives on the IMAGE object, not the container object.
+            docker image inspect "ghcr.io/goccy/bigquery-emulator:$ver" \
+              --format 'image {{index .RepoTags 0}} os/arch={{.Os}}/{{.Architecture}}'
             for i in $(seq 1 40); do
               if curl -sf "http://localhost:$port/discovery/v1/apis/bigquery/v2/rest" >/dev/null 2>&1; then
                 break
