@@ -1,0 +1,57 @@
+name: verify-468
+
+on:
+  push:
+  workflow_dispatch:
+
+jobs:
+  repro:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Native arch evidence (no QEMU)
+        run: |
+          echo "runner uname -m : $(uname -m)"
+          echo "runner uname -a : $(uname -a)"
+          docker version --format 'docker server os/arch: {{.Server.Os}}/{{.Server.Arch}}'
+
+      - uses: actions/setup-go@v5
+        with:
+          go-version: '1.23'
+
+      - name: Prepare probe module (cloud.google.com/go/bigquery v1.74.0)
+        run: |
+          set -euxo pipefail
+          mkdir -p /tmp/probe
+          cp main.go /tmp/probe/main.go
+          cd /tmp/probe
+          go mod init probe
+          go get cloud.google.com/go/bigquery@v1.74.0
+          go mod tidy
+
+      - name: Run emulators on native amd64 and probe
+        working-directory: /tmp/probe
+        run: |
+          set -euo pipefail
+          run_one() {
+            ver="$1"; port="$2"
+            echo "::group::emulator $ver (native amd64, port $port)"
+            docker run --rm -d --name "emu-$ver" -p "$port:9050" \
+              "ghcr.io/goccy/bigquery-emulator:$ver" --project=test
+            # confirm the container is really running this image digest natively
+            docker inspect --format 'image: {{.Config.Image}}  arch: {{.Architecture}}' "emu-$ver" || true
+            for i in $(seq 1 40); do
+              if curl -sf "http://localhost:$port/discovery/v1/apis/bigquery/v2/rest" >/dev/null 2>&1; then
+                break
+              fi
+              sleep 1
+            done
+            echo "=== bigquery-emulator $ver (native $(uname -m)) ==="
+            go run main.go "http://localhost:$port"
+            docker rm -f "emu-$ver" >/dev/null
+            echo "::endgroup::"
+          }
+          run_one 0.6.6 9066
+          run_one 0.7.0 9070
+          run_one 0.7.1 9071
